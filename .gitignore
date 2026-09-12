@@ -1,0 +1,37 @@
+# Reference checkout maintained separately
+/upstream/
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+/bridge/.venv-media/
+
+# Logs and local runtime files
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+
+# ESP-IDF / local device configuration
+/panel-codex/build/
+/panel-codex/build.stale-cn-path/
+/panel-codex/sdkconfig
+/panel-codex/sdkconfig.old
+/panel-codex/sdkconfig.*.bak
+/panel-codex/managed_components/
+/panel-codex/dependencies.lock
+/panel-codex/provisioning.json
+/panel-codex/backup/
+/panel-codex/tools/node_modules/
+/panel-codex/tools/package-lock.json
+/panel-codex/tools/NotoSansSC-Regular.otf
+/panel-codex/tools/cjk-subset.txt
+/panel-codex/tools/voice-wav/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

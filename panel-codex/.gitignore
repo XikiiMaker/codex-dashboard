@@ -1,0 +1,22 @@
+build/
+build.stale-cn-path/
+*.log
+sdkconfig
+sdkconfig.old
+sdkconfig.*.bak
+managed_components/
+dependencies.lock
+provisioning.json
+
+# 字体生成的输入与工具，产物 main/fonts/*.c 要提交，这些不要
+tools/node_modules/
+tools/package-lock.json
+tools/NotoSansSC-Regular.otf
+tools/cjk-subset.txt
+
+# gen-voice.ps1 的中间 wav，产物 tools/voice.bin 要提交，这些不要
+tools/voice-wav/
+
+# 刷机前读回的出厂 flash 整片镜像，每台一份 16MB。不入库，但别删——
+# 出厂那套 demo 系统没有别的获取渠道，要退回去只能靠它。
+backup/

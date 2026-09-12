@@ -1,0 +1,201 @@
+# 触屏面板固件默认配置
+#
+# 硬件相关项（flash / PSRAM / L2 cache / LCD）直接沿用卖家 lvgl_demo_v9 的
+# sdkconfig.defaults，改动这些等于改板级参数，会点不亮屏。
+# 业务相关项（分区表、以太网、HTTP/OTA、NVS）是本工程新增。
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# ---------- 芯片修订版（板级，必须显式设，否则刷不进去） ----------
+# 实物面板是 ESP32-P4 v1.3（esptool flash_id 实测），而 IDF 5.5.5 对 P4 默认
+# CONFIG_ESP32P4_REV_MIN_301（v3.1 量产版），编出来的 bootloader 会被 esptool 以
+# "requires chip revision in range [v3.1 - v3.99] (this chip is revision v1.3)" 拒绝。
+# P4 的 rev <3.0 与 >=3.0 按 Espressif 自己的说法有 "huge hardware difference" 且
+# 互不兼容，要支持 1.x 必须先开下面这个总闸，才能在 choice 里选到 REV_MIN_100。
+# 卖家所有 P4 demo（lvgl_demo_v9 / xiaozhi / esp_draw_bits）都是这两项，本工程照抄。
+# 不要改用 esptool --force 绕过：min rev 参与编译期的 errata 绕行与 ROM 接口决策，
+# v1.3 芯片跑按 v3.1 编的固件是未定义行为。
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# ---------- CPU 主频：用 IDF 默认的 360，别开 400 ----------
+# 2026-09-03 真机实测：开 CONFIG_ESP_FORCE_400MHZ_ON_REV_LESS_V3=y +
+# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400=y 后，这块 v1.3 芯片**连应用都进不去**，
+# 在时钟初始化就死：
+#   assert failed: esp_clk_init clk.c:142 (res)
+# 即 rtc_clk_cpu_freq_mhz_to_config(400, ...) 返回 false —— 这颗硅片上压根不存在
+# 400MHz 的合法 CPU 时钟配置，于是无限重启（12 秒内 12 次 SW_CPU_RESET）。
+# 与 v1.3 数据手册的 "up to 360 MHz，要 400 请联系我们" 一致。已撤回，别再试。
+# 当时开它是为了排查扫码枪零报文，顺带也证明了主频与那个问题无关（连跑都跑不起来）。
+
+# ---------- flash / PSRAM / cache（板级，勿改） ----------
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+
+# ---------- 分区表（双 OTA 槽） ----------
+# 表偏移从默认 0x8000 挪到 0xA000：ESP32-P4 的 bootloader 编出来是 0x60c0，
+# 0x8000 只留 0x6000 给它，装不下（卖家 demo 的 bootloader 配置与此处完全一致，
+# 所以这不是我们加的东西撑大的）。挪到 0xA000 后有 0x8000 余量。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0xA000
+
+# ---------- 任务与调度 ----------
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
+CONFIG_FREERTOS_HZ=1000
+
+# ---------- 显示流水线 ----------
+# 单缓冲，无防撕裂。这是卖家 lvgl_demo_v9 在这块板上实测过的唯一组合。
+#
+# AVOID_TEAR 与这块屏互斥，别再试了：BSP 的 esp32_p4_function_ev_board.c 在
+# CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR 下把 .sw_rotate 硬写成 false，原文注释是
+# "Avoid tearing is not supported for SW rotation"。而这块屏离不开软件旋转——
+# 面板 DSI 原生竖排扫描，BSP 声明 1024x600 后本想靠 esp_lcd 的 swap_xy 硬件转，
+# jd9165 驱动不支持（运行时报 "swap_xy is not supported by this panel"），只能靠
+# LVGL 的 sw_rotate 在软件侧补。曾按 esp_brookesia_phone demo 整组开过
+# DPI_BUFFER_NUMS=2 + AVOID_TEAR + DIRECT_MODE，实物屏就是整屏竖条纹花屏
+# （bootloader/LVGL 都正常起来了，GT911 也在线，纯粹是没转成）。
+# 屏型号本身没选错（BSP_LCD_TYPE_1024_600 是对的）。
+#
+# 结论：防撕裂在这块屏上不是调 sdkconfig 能拿到的，得先让旋转不依赖 sw_rotate
+# （走 PPA 硬件旋转，见 esp_lvgl_port 的 LVGL_PORT_PPA）才有资格谈。
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=1
+# 小于此值的分配留在内部 RAM。**不要往下调**：2026-09-02 实测降到 4096 后，esp-hosted
+# 的 SDIO 接收缓冲（普通 malloc）会落到 PSRAM，而 SDMMC 的 DMA 访问不了 PSRAM。
+# 但当时把 sdio_drv.c:928 那个 assert 整个归因于此是错的：回退到 16384 后空跑 117 秒
+# 一次不崩，而一操作面板输入照样崩 —— 真因是给 DMA 的保留池太小，见下一项。
+# 这个值本身不必再动：当初想调低它是为了给硬件 AES 的 DMA 描述符腾内部 RAM，那条路
+# 已经改成直接关掉硬件 AES（见下方 TLS 段）。
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# 保留给 DMA/内部分配的专属池。IDF 默认只留 32K，在这块板上不够，会以一个看起来
+# 毫不相干的崩溃暴露出来：
+#   assert failed: sdio_push_data_to_queue sdio_drv.c:928 (pkt_rxbuff)
+# esp-hosted 的 SDIO 接收缓冲必须是 64 字节对齐的内部 DMA 内存，只能从这个池里拿。
+# 但要注意：**调大这一项本身治不好那个 assert**。2026-09-02 实测调到 128K、启动日志
+# 确认「Reserving pool of 128K」已生效，一操作面板输入照样崩。真因是 LVGL 当时走
+# CLIB malloc，所有小块分配都锁在内部 RAM，光栅化字形时把整个内部 RAM 吃光，池子再
+# 大也只是晚一点被抢空。真正的修复是把 LVGL 的堆迁去 PSRAM（见下方 LVGL 段）。
+# 这一项留着是合理的加固：内部 RAM 总共 388K，留 128K 给 DMA 仍有 260K 给普通分配，
+# 且普通 malloc 内部不够会自动落 PSRAM，不会因此 OOM。
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072
+
+# ---------- LVGL v9 ----------
+# 内存后端不用 CLIB malloc，改用 main/lv_mem_psram.c 里的自定义实现（直接 heap_caps
+# 走 PSRAM）。CLIB malloc 会撞上 ALWAYSINTERNAL=16384：LVGL 的对象、样式、tiny_ttf
+# 字形位图单块都远小于 16KB，于是全部锁死在 388KB 内部 RAM 里，32MB PSRAM 一块用不上，
+# 还会把 SDIO 要的内部 DMA 内存抢空 —— 那就是「输入时白屏重启」的来源。
+CONFIG_LV_USE_CUSTOM_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_DEF_REFR_PERIOD=15
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# LVGL 的绘图热点函数不进 IRAM。v1.x 芯片可执行 RAM 只有 179KB（sram_low，
+# 0x4FF00000-0x4FF2CBD0，IRAM 与 DRAM 共用），v3.x 那份是 444KB 连续；v1.x 的
+# SRAM 上半部（sram_high 256KB）只有 RW 没有 X，放不了代码。而 XIP_FROM_PSRAM
+# 会把 mmu_hal / cache_hal / spi_flash 这些操作 cache 的代码全钉进 IRAM——它们
+# 不能在自己要操作的 PSRAM 里执行。再让 LVGL 抢 IRAM，链接器就会开始丢弃这些
+# 必需段并报 "--enable-non-contiguous-regions discards section"。
+# 卖家 lvgl_demo_v9 同样是关的。要打开就得先证明 IRAM 有余量。
+# CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM is not set
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_TXT_BREAK_CHARS=" ,.;:-_"
+
+# 中文走 tiny_ttf 运行时光栅化，而不是 lv_font_conv 的编译期位图子集。
+# 子集字体的字表在编译期定死，可服务端下发的师傅姓名、初步诊断是任意中文，
+# 必然撞上子集外的字并渲染成方块。改成映射 font 分区里的完整 NotoSansSC
+# 后按需出字形，顺带把 3.2MB 字体源码从固件里去掉。
+CONFIG_LV_USE_TINY_TTF=y
+# 不开 FILE_SUPPORT：真机用 esp_partition_mmap 拿到指针后走 create_data，
+# 不需要 LVGL 的文件系统层（模拟器侧另有自己的 lv_conf.h，那边才走文件）。
+# CONFIG_LV_TINY_TTF_FILE_SUPPORT is not set
+# 默认 128 太小：首页同屏中文字符数已接近该值，缓存会持续换入换出。
+CONFIG_LV_TINY_TTF_CACHE_GLYPH_CNT=512
+
+# ---------- USB Host（外接扫码枪） ----------
+# 枪必须直连根端口，不能经 hub —— 这条是真机实测出来的硬限制，别再试了。
+#
+# 开这个开关前，接 hub 时协议栈只枚举根端口那一个设备（hub 自己是 class 09、
+# HID 驱动不认），下游的枪压根不被枚举，现象是 HID 回调彻底静默，无从判断。
+# 开了以后 hub 本身能枚举了，但立刻撞上更硬的一层：
+#   HUB: Connected device is FS, transaction translator (TT) is not supported
+#   EXT_PORT: [1:2] Port disabled, reset attempts=1
+# 枪是 Full-Speed 设备，挂在 High-Speed hub 后面要靠 hub 内的 TT 做速率转换，
+# IDF 的 USB Host 栈没实现 TT，于是直接把那个下游端口禁掉。换 hub 没用（现在
+# 买到的都是 HS hub），只有 USB-C 转 USB-A 母的纯转接头直连才行。
+#
+# 开关仍然留着：它把「静默无反应」变成了上面那两行明确报错，现场插错线时
+# 一看日志就知道原因，值这点内存。
+#
+# 试过关掉它作单变量排除（怀疑 ext_port 逻辑影响根端口设备的周期传输），真机日志
+# 一字不差，无效，已撤回——别再试这条路。
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+# CONFIG_USB_HOST_HUB_MULTI_LEVEL is not set
+# 曾试过按劣质设备放宽枚举时序（DEBOUNCE 500 / HOLD 50 / RECOVERY 200 / SETADDR
+# 100），真机实测日志一字不差，无效，已撤回——别再试这条路。
+
+# ---------- 以太网（内部 EMAC + RMII + IP101） ----------
+# 引脚见 panel_net.c 里的 PANEL_ETH_* 宏，与卖家 ethernet demo 的实测值一致。
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_PHY_INTERFACE_RMII=y
+CONFIG_ETH_RMII_CLK_OUTPUT=y
+
+# ---------- WiFi（经板载 ESP32-C6，esp-hosted over SDIO） ----------
+# P4 本身没有射频。板上另有一颗 ESP32-C6 跑 esp-hosted 的 slave 固件，P4 通过 SDIO
+# 把 esp_wifi_* 调用转发过去（依赖见 main/idf_component.yml）。
+#
+# 下面这组引脚不是猜的：出厂固件里带 JC-C6-slave_v2.3.2.bin，卖家小智固件的
+# sdkconfig 实测走 FUNC_BOARD 预设 —— SDIO slot 1，CMD=19 CLK=18 D0~D3=14~17，
+# C6 复位脚 GPIO54 高有效。选 FUNC_BOARD 后引脚由预设给出，不用逐个再写。
+#
+# 与 SD 卡不冲突：BSP 把 SD 挂在 slot 0（走 IO MUX），这里用 slot 1。
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=40000
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
+
+# ---------- HTTP / TLS / OTA ----------
+# 云端走 HTTPS，PDU 走局域网明文 HTTP，同一个 esp_http_client 两种用法。
+# 证书校验必须开：面板在请求头里带静态令牌，且固件也从这条链路下载，
+# 关掉校验等于把令牌和固件交给任何能做中间人的设备。
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=8192
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
+# 关掉硬件 AES。它走 DMA，每次握手都要现分内部 RAM 放 DMA 描述符和对齐缓冲，而这块
+# 板子内部 RAM 只有 388KB，够不够全看当时的碎片情况——进扫码页后键盘的字形光栅化一
+# 挤，握手就成片失败（`esp-aes: Failed to allocate memory ...` 后跟
+# `mbedtls_ssl_handshake returned -0x0001`），面板报「云端离线」。
+# 2026-09-02 实测这一项就够了：同样 150 秒的观察窗口，esp-aes 分配失败 48 次 → 0 次，
+# 注册耗时 211 秒 → 13 秒。面板每 2 秒只发一个几百字节的请求，软件 AES 的 CPU 开销无感。
+CONFIG_MBEDTLS_HARDWARE_AES=n
+
+# ---------- 看门狗 ----------
+# 面板卡死等于机位失去本地开关机入口，宁可自动重启。
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+CONFIG_ESP_INT_WDT=y
+
+# ---------- 对时 ----------
+# 需要 3 个槽位而不是默认的 1 个：panel_net.c 给了 2 个服务器，又把
+# index_of_first_server 设成 1 把 index 0 让给 DHCP 下发的服务器。槽位不够时编译器
+# 报 "excess elements in array initializer"，第二个服务器被静默丢掉。
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+# 运行时那句 "Failed initialize SNTP service" 是另一回事：代码设了
+# server_from_dhcp=true，而这个选项默认关闭，esp_netif_sntp_init 检到「要用 DHCP 下发
+# 的服务器、功能却没开」就直接返回错误，连两个写死的服务器也一起没了。
+CONFIG_LWIP_DHCP_GET_NTP_SRV=y

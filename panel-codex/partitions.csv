@@ -1,0 +1,22 @@
+# 触屏面板分区表（16MB flash，双 OTA 槽 + 字体分区）
+#
+# 与卖家 demo 的单 factory 分区不同：面板装到机位上后不方便逐台接线刷机，
+# 必须留 esp_https_ota 通道，因此改成 otadata + ota_0/ota_1 双槽。
+# 偏移全部写死：app 分区要求 0x10000 对齐，让工具链自动排容易踩到对齐错误。
+# 首个分区从 0xB000 起：分区表本身放在 0xA000（见 sdkconfig.defaults 里挪偏移的
+# 原因），占满 0xA000-0xB000，nvs 不能再从旧的 0x9000 开始。
+#
+# font 分区放完整的 NotoSansSC-Regular.otf，由 lv_tiny_ttf 经 esp_partition_mmap
+# 直接映射后按需光栅化。字体不再以 lv_font_conv 位图形式编进固件，所以工单里
+# 服务端下发的任意汉字（师傅姓名、诊断文本）都能渲染，不会出现子集缺字的方块。
+# 代价是 app 槽从 4MB 缩到 3MB —— 去掉 3.2MB 字体源码后固件约 1.1MB，余量仍有 2.7 倍。
+# 字体不随 OTA 走，需单独烧写一次，见 tools/flash-font.bat。
+#
+# Name,   Type, SubType, Offset,    Size,     Flags
+nvs,      data, nvs,     0xb000,    0x4000,
+phy_init, data, phy,     0xf000,    0x1000,
+otadata,  data, ota,     0x10000,   0x2000,
+ota_0,    app,  ota_0,   0x20000,   0x300000,
+ota_1,    app,  ota_1,   0x320000,  0x300000,
+font,     data, undefined, 0x620000, 0x800000,
+storage,  data, spiffs,  0xe20000,  0x1e0000,

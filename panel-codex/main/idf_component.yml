@@ -1,0 +1,23 @@
+## Codex 看板固件依赖
+##
+## esp32_p4_function_ev_board 不在这里声明：它是本工程 components/ 下的本地组件，
+## 拷自卖家 JC1060P470C_I_W_Y_Old_Panel/common_components（外壳背面料号无 V2 后缀者
+## 对应 Old_Panel）。声明成注册表依赖会被拉成上游未打补丁的版本，屏点不亮。
+##
+## 若换到料号带 V2 的机器导致屏花屏/不亮，新旧屏之别只有两处：
+## esp32_p4_function_ev_board.c 里的 hsync_back_porch（Old=160 / New=136）
+## 和 jd9165_lcd_init_cmd_t lcd_cmd[] 的 gamma/GIP 表，从 New_Panel 分支照抄即可。
+dependencies:
+  idf: ">=5.4"
+  lvgl/lvgl:
+    version: 9.5.0
+    public: true
+  # 本地 BSP 的 idf_component.yml 里已 require esp_lcd_jd9165，这里显式再写一遍，
+  # 避免以后有人误删 BSP 的 manifest 后无声退化成 ek79007。
+  espressif/esp_lcd_jd9165: "*"
+  # WiFi：P4 没有射频，靠板载 ESP32-C6 走 esp-hosted over SDIO（slot 1）代跑协议栈。
+  # esp_wifi_remote 把 esp_wifi_* 调用转发过去，所以业务代码写法与普通 ESP32 一样。
+  # 版本钉死在卖家小智固件实测可用的 2.11.6：host 与 C6 上的 slave 固件之间有 RPC
+  # 协议版本协商，跨大版本换 host 组件就得连 C6 一起重刷。
+  espressif/esp_hosted: "2.11.6"
+  espressif/esp_wifi_remote: "*"

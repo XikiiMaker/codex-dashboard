@@ -1,0 +1,23 @@
+# media_server.py 的依赖
+#
+# bridge 主体是零依赖的纯 Node.js，这份只服务于新增的媒体桥，装在独立 venv 里，
+# 不污染全局 Python：
+#
+#   py -m venv .venv-media
+#   .venv-media\Scripts\python.exe -m pip install -r requirements-media.txt
+#
+# 版本按 2026-09-12 实测通过的那一组钉住。winsdk 是预发布包，只有 cp312 的
+# wheel，换 Python 大版本前要先确认 PyPI 上有对应的包。
+
+# SMTC：读「正在播什么」+ 反向控制播放。Windows 只此一条官方通路。
+winsdk==1.0.0b10
+
+# 封面：缩略图居中裁方、缩放、转 RGB565 裸数据（面板那份 LVGL 没开 JPEG 解码器）
+Pillow==12.3.0
+
+# 系统主音量。SMTC 压根没有音量接口，只能走 COM 的 IAudioEndpointVolume。
+pycaw==20251023
+comtypes==1.4.16
+
+# 在线歌词查询（网易云 / lrclib）
+requests==2.34.2
